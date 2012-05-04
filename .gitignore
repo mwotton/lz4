@@ -1,0 +1,11 @@
+CMakeFiles/
+CMakeCache.txt
+install_manifest.txt
+*.cmake
+Makefile
+
+*.o
+*.a
+*.so*
+liblz4.so
+lz4demo
