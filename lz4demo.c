@@ -1,6 +1,7 @@
 /*
     LZ4Demo - Demo CLI program using LZ4 compression
-    Copyright (C) Yann Collet 2011,
+    Copyright (C) Yann Collet 2011-2012
+	GPL v2 License
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,6 +29,12 @@
 */
 
 //****************************
+// Warning messages
+//****************************
+#define _CRT_SECURE_NO_WARNINGS    // Visual (must be first line)
+
+
+//****************************
 // Includes
 //****************************
 #include <stdio.h>		// fprintf, fopen, fread, _fileno(?)
@@ -39,6 +46,7 @@
 #include <fcntl.h>		// _O_BINARY
 #endif
 #include "lz4.h"
+#include "lz4hc.h"
 #include "bench.h"
 
 
@@ -68,7 +76,6 @@ static inline unsigned int swap32(unsigned int x) {
 #define COMPRESSOR_VERSION ""
 #define COMPILED __DATE__
 #define AUTHOR "Yann Collet"
-#define BINARY_NAME "lz4demo.exe"
 #define EXTENSION ".lz4"
 #define WELCOME_MESSAGE "*** %s %s, by %s (%s) ***\n", COMPRESSOR_NAME, COMPRESSOR_VERSION, AUTHOR, COMPILED
 
@@ -96,14 +103,15 @@ static const int one = 1;
 //****************************
 // Functions
 //****************************
-int usage()
+int usage(char* exename)
 {
 	DISPLAY( "Usage :\n");
-	DISPLAY( "      %s [arg] input output\n", BINARY_NAME);
+	DISPLAY( "      %s [arg] input output\n", exename);
 	DISPLAY( "Arguments :\n");
-	DISPLAY( " -c : compression (default)\n");
+	DISPLAY( " -c0: Fast compression (default) \n");
+	DISPLAY( " -c1: High compression \n");
 	DISPLAY( " -d : decompression \n");
-	DISPLAY( " -b : benchmark with files\n");
+	DISPLAY( " -b#: Benchmark files, using # compression level\n");
 	DISPLAY( " -t : check compressed file \n");
 	DISPLAY( " -h : help (this text)\n");
 	DISPLAY( "input  : can be 'stdin' (pipe) or a filename\n");
@@ -112,10 +120,10 @@ int usage()
 }
 
 
-int badusage()
+int badusage(char* exename)
 {
 	DISPLAY("Wrong parameters\n");
-	usage();
+	usage(exename);
 	return 0;
 }
 
@@ -154,8 +162,9 @@ int get_fileHandle(char* input_filename, char* output_filename, FILE** pfinput, 
 
 
 
-int compress_file(char* input_filename, char* output_filename)
+int compress_file(char* input_filename, char* output_filename, int compressionlevel)
 {
+	int (*compressionFunction)(const char*, char*, int);
 	unsigned long long filesize = 0;
 	unsigned long long compressedfilesize = ARCHIVE_MAGICNUMBER_SIZE;
 	unsigned int u32var;
@@ -164,10 +173,17 @@ int compress_file(char* input_filename, char* output_filename)
 	FILE* finput;
 	FILE* foutput;
 	int r;
+	int displayLevel = (compressionlevel>0);
 	clock_t start, end;
 
 
 	// Init
+	switch (compressionlevel)
+	{
+	case 0 : compressionFunction = LZ4_compress; break;
+	case 1 : compressionFunction = LZ4_compressHC; break;
+	default : compressionFunction = LZ4_compress;
+	}
 	start = clock();
 	r = get_fileHandle(input_filename, output_filename, &finput, &foutput);
 	if (r) return r;
@@ -191,10 +207,12 @@ int compress_file(char* input_filename, char* output_filename)
 	    int inSize = fread(in_buff, 1, CHUNKSIZE, finput);
 		if( inSize<=0 ) break;
 		filesize += inSize;
+		if (displayLevel) DISPLAY("Read : %i MB  \r", (int)(filesize>>20));
 
 		// Compress Block
-		outSize = LZ4_compress(in_buff, out_buff+4, inSize);
+		outSize = compressionFunction(in_buff, out_buff+4, inSize);
 		compressedfilesize += outSize+4;
+		if (displayLevel) DISPLAY("Read : %i MB  ==> %.2f%%\r", (int)(filesize>>20), (double)compressedfilesize/filesize*100);
 
 		// Write Block
 		LITTLE_ENDIAN32(outSize);
@@ -229,7 +247,7 @@ int decode_file(char* input_filename, char* output_filename)
 	char* out_buff;
 	size_t uselessRet;
 	int sinkint;
-	unsigned int nextSize;
+	unsigned int chunkSize;
 	FILE* finput;
 	FILE* foutput;
 	clock_t start, end;
@@ -247,42 +265,32 @@ int decode_file(char* input_filename, char* output_filename)
 	if (!in_buff || !out_buff) { DISPLAY("Allocation error : not enough memory\n"); return 7; }
 
 	// Check Archive Header
-	uselessRet = fread(out_buff, 1, ARCHIVE_MAGICNUMBER_SIZE, finput);
-	nextSize = *(unsigned int*)out_buff;
-	LITTLE_ENDIAN32(nextSize);
-	if (nextSize != ARCHIVE_MAGICNUMBER) { DISPLAY("Unrecognized header : file cannot be decoded\n"); return 6; }
-
-	// First Block
-	*(unsigned int*)in_buff = 0;
-	uselessRet = fread(in_buff, 1, 4, finput);
-	nextSize = *(unsigned int*)in_buff;
-	LITTLE_ENDIAN32(nextSize);
+	chunkSize = 0;
+	uselessRet = fread(&chunkSize, 1, ARCHIVE_MAGICNUMBER_SIZE, finput);
+	LITTLE_ENDIAN32(chunkSize);
+	if (chunkSize != ARCHIVE_MAGICNUMBER) { DISPLAY("Unrecognized header : file cannot be decoded\n"); return 6; }
 
 	// Main Loop
 	while (1)
 	{
+		// Block Size
+		uselessRet = fread(&chunkSize, 1, 4, finput);
+		if( uselessRet==0 ) break;   // Nothing to read : file read is completed
+		LITTLE_ENDIAN32(chunkSize);
+		if (chunkSize == ARCHIVE_MAGICNUMBER) 
+			continue;   // appended compressed stream
+		
 		// Read Block
-	    uselessRet = fread(in_buff, 1, nextSize, finput);
-
-		// Check Next Block
-		uselessRet = (size_t) fread(&nextSize, 1, 4, finput);
-		if( uselessRet==0 ) break;   // Nothing read : file read is completed
-		LITTLE_ENDIAN32(nextSize);
+	    uselessRet = fread(in_buff, 1, chunkSize, finput);
 
 		// Decode Block
-		sinkint = LZ4_uncompress(in_buff, out_buff, CHUNKSIZE);
+		sinkint = LZ4_uncompress_unknownOutputSize(in_buff, out_buff, chunkSize, CHUNKSIZE);
 		if (sinkint < 0) { DISPLAY("Decoding Failed ! Corrupted input !\n"); return 9; }
-		filesize += CHUNKSIZE;
+		filesize += sinkint;
 
 		// Write Block
-		fwrite(out_buff, 1, CHUNKSIZE, foutput);
+		fwrite(out_buff, 1, sinkint, foutput);
 	}
-
-	// Last Block (which size is <= CHUNKSIZE, but let LZ4 figure that out)
-    uselessRet = fread(in_buff, 1, nextSize, finput);
-	sinkint = LZ4_uncompress_unknownOutputSize(in_buff, out_buff, nextSize, CHUNKSIZE);
-	filesize += sinkint;
-	fwrite(out_buff, 1, sinkint, foutput);
 
 	// Status
 	end = clock();
@@ -305,10 +313,11 @@ int decode_file(char* input_filename, char* output_filename)
 int main(int argc, char** argv)
 {
   int i,
-	  compression=1,   // default action if no argument
+	  cLevel=0,
 	  decode=0,
 	  bench=0,
 	  filenamesStart=2;
+  char* exename=argv[0];
   char* input_filename=0;
   char* output_filename=0;
 #ifdef _WIN32
@@ -321,7 +330,7 @@ int main(int argc, char** argv)
   // Welcome message
   DISPLAY( WELCOME_MESSAGE);
 
-  if (argc<2) { badusage(); return 1; }
+  if (argc<2) { badusage(exename); return 1; }
 
   for(i=1; i<argc; i++)
   {
@@ -335,16 +344,16 @@ int main(int argc, char** argv)
 		argument ++;
 
 		// Display help on usage
-		if ( argument[0] =='h' ) { usage(); return 0; }
+		if ( argument[0] =='h' ) { usage(exename); return 0; }
 
 		// Compression (default)
-		if ( argument[0] =='c' ) { compression=1; continue; }
+		if ( argument[0] =='c' ) { if (argument[1] >='0') cLevel=argument[1] - '0'; continue; }
 
 		// Decoding
 		if ( argument[0] =='d' ) { decode=1; continue; }
 
 		// Bench
-		if ( argument[0] =='b' ) { bench=1; continue; }
+		if ( argument[0] =='b' ) { bench=1; if (argument[1] >= '0') cLevel=argument[1] - '0'; continue; } 
 
 		// Modify Block Size (benchmark only)
 		if ( argument[0] =='B' ) { int B = argument[1] - '0'; int S = 1 << (10 + 2*B); BMK_SetBlocksize(S); continue; }
@@ -369,18 +378,15 @@ int main(int argc, char** argv)
   }
 
   // No input filename ==> Error
-  if(!input_filename) { badusage(); return 1; }
+  if(!input_filename) { badusage(exename); return 1; }
 
-  if (bench) return BMK_benchFile(argv+filenamesStart, argc-filenamesStart, 0);
+  if (bench) return BMK_benchFile(argv+filenamesStart, argc-filenamesStart, cLevel);
 
-  // No output filename
-  if (!output_filename) { badusage(); return 1; }
+  // No output filename ==> Error
+  if (!output_filename) { badusage(exename); return 1; }
 
   if (decode) return decode_file(input_filename, output_filename);
 
-  if (compression) return compress_file(input_filename, output_filename);
+  return compress_file(input_filename, output_filename, cLevel);   // Compression is 'default' action
 
-  badusage();
-
-  return 0;
 }

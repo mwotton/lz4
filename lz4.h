@@ -1,8 +1,8 @@
 /*
    LZ4 - Fast LZ compression algorithm
    Header File
-   Copyright (C) 2011, Yann Collet.
-   BSD License
+   Copyright (C) 2011-2012, Yann Collet.
+   BSD 2-Clause License (http://www.opensource.org/licenses/bsd-license.php)
 
    Redistribution and use in source and binary forms, with or without
    modification, are permitted provided that the following conditions are
@@ -26,6 +26,10 @@
    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+   You can contact the author at :
+   - LZ4 homepage : http://fastcompression.blogspot.com/p/lz4.html
+   - LZ4 source repository : http://code.google.com/p/lz4/
 */
 #pragma once
 
@@ -85,7 +89,8 @@ LZ4_uncompress_unknownOutputSize() :
 	return : the number of bytes decoded in the destination buffer (necessarily <= maxOutputSize)
 			 If the source stream is malformed, the function will stop decoding and return a negative result, indicating the byte position of the faulty instruction
 			 This function never writes beyond dest + maxOutputSize, and is therefore protected against malicious data packets
-	note   : This version is slightly slower than LZ4_uncompress()
+	note   : Destination buffer must be already allocated.
+	         This version is slightly slower than LZ4_uncompress()
 */
 
 
